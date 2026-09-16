@@ -1,0 +1,309 @@
+import sqlite3
+from pathlib import Path
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import streamlit as st
+
+APP_DIR = Path(__file__).resolve().parent
+DB_PATH = APP_DIR / 'dielectric.db'
+BASE_QUALITY = "data_quality IN ('recommended','literature_mined')"
+PROPERTY_FIELDS = [
+    ('mass_g_mol','Mass / g mol-1'),
+    ('dipole_moment_d','Dipole moment / D'),
+    ('hbond_acceptors','H-bond acceptors'),
+    ('hbond_donors','H-bond donors'),
+    ('logp','LogP'),
+    ('polar_surface_area_a2','Polar surface area / Å²'),
+    ('polarizability_a3','Polarizability / Å³'),
+    ('molar_volume_cm3_mol','Molar volume / cm³ mol-1'),
+    ('refractive_index','Refractive index'),
+    ('melting_point_c','Melting point / °C'),
+    ('boiling_point_c','Boiling point / °C'),
+    ('density_g_cm3','Density / g cm-3'),
+    ('viscosity_mpas','Viscosity / mPa·s'),
+]
+
+st.set_page_config(page_title='介电性质数据库', layout='wide', initial_sidebar_state='collapsed')
+st.markdown('''
+<style>
+html, body, [class*="css"], [data-testid="stAppViewContainer"] {font-family:"Microsoft YaHei","PingFang SC","Noto Sans CJK SC",Arial,sans-serif;}
+.block-container {padding-top:1.1rem; padding-bottom:2rem; max-width:1550px;}
+[data-testid="stSidebar"] {display:none;}
+[data-testid="stMetricValue"] {font-size:1.55rem;}
+.stTabs [data-baseweb="tab"] {font-size:1.0rem; font-weight:600;}
+.muted {color:#6b7280; font-size:0.92rem;}
+</style>
+''', unsafe_allow_html=True)
+
+@st.cache_resource
+def get_conn():
+    if not DB_PATH.exists():
+        st.error(f'未找到数据库：{DB_PATH}')
+        st.stop()
+    # UI is strictly read-only. Data updates should be performed by the update workflow, not by the query app.
+    conn = sqlite3.connect(f'file:{DB_PATH}?mode=ro', uri=True, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def table_exists(name):
+    return get_conn().execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone() is not None
+
+def cols_of(table):
+    if not table_exists(table): return set()
+    return {r['name'] for r in get_conn().execute(f'PRAGMA table_info({table})')}
+
+@st.cache_data
+def get_kpis():
+    q = f'''
+    SELECT COUNT(DISTINCT c.id) compounds,
+           COUNT(DISTINCT m.id) measurements,
+           COUNT(DISTINCT CASE WHEN m.sample_type='pure' THEN m.id END) pure_records,
+           COUNT(DISTINCT CASE WHEN m.sample_type='mixture' THEN m.id END) mixture_records,
+           COUNT(DISTINCT m.source_id) sources,
+           SUM(CASE WHEN lower(COALESCE(m.data_kind,'')) LIKE '%experimental%' THEN 1 ELSE 0 END) experimental_records,
+           SUM(CASE WHEN lower(COALESCE(m.method,'')) LIKE '%figure%' THEN 1 ELSE 0 END) figure_records,
+           SUM(CASE WHEN lower(COALESCE(m.data_kind,'')) LIKE '%simulat%' OR lower(COALESCE(m.data_kind,'')) LIKE '%predict%' OR lower(COALESCE(m.data_kind,'')) LIKE '%calculat%' OR lower(COALESCE(m.data_kind,'')) LIKE '%estimat%' THEN 1 ELSE 0 END) modeled_records
+    FROM measurements m JOIN compounds c ON c.id=m.component1_id
+    WHERE {BASE_QUALITY} AND c.name_en IS NOT NULL AND TRIM(c.name_en)<>''
+    '''
+    return pd.read_sql(q, get_conn()).iloc[0].to_dict()
+
+@st.cache_data
+def property_completeness():
+    if not table_exists('compound_properties'):
+        return pd.DataFrame(columns=['Property','Filled','Missing','Completeness'])
+    cols = cols_of('compound_properties')
+    n = get_conn().execute('SELECT COUNT(*) FROM compound_properties').fetchone()[0]
+    out=[]
+    for field,label in PROPERTY_FIELDS:
+        if field not in cols: continue
+        filled = get_conn().execute(f'SELECT COUNT(*) FROM compound_properties WHERE {field} IS NOT NULL').fetchone()[0]
+        out.append([label,filled,max(n-filled,0),filled/n if n else 0])
+    return pd.DataFrame(out, columns=['Property','Filled','Missing','Completeness'])
+
+@st.cache_data
+def find_compounds(term):
+    term=(term or '').strip()
+    if not term: return pd.DataFrame(columns=['id','name_en','name_cn','cas','n_records'])
+    s=f'%{term}%'
+    return pd.read_sql(f'''
+      SELECT c.id,c.name_en,c.name_cn,c.cas,COUNT(DISTINCT m.id) n_records
+      FROM compounds c LEFT JOIN measurements m ON (m.component1_id=c.id OR m.component2_id=c.id) AND {BASE_QUALITY}
+      WHERE c.name_en LIKE ? OR COALESCE(c.name_cn,'') LIKE ? OR c.cas LIKE ?
+      GROUP BY c.id ORDER BY CASE WHEN c.cas=? OR c.name_en=? OR c.name_cn=? THEN 0 ELSE 1 END,n_records DESC,c.name_en LIMIT 80
+    ''', get_conn(), params=[s,s,s,term,term,term])
+
+@st.cache_data
+def query_data(search='', tmin=None,tmax=None,fmin=None,fmax=None,limit=5000):
+    clauses=[BASE_QUALITY,"component1_en IS NOT NULL","TRIM(component1_en)<>''"]
+    params=[]
+    if search:
+        s=f'%{search.strip()}%'
+        clauses.append("(component1_en LIKE ? OR COALESCE(component1_cn,'') LIKE ? OR cas1 LIKE ? OR COALESCE(component2_en,'') LIKE ? OR COALESCE(component2_cn,'') LIKE ? OR COALESCE(cas2,'') LIKE ?)")
+        params += [s,s,s,s,s,s]
+    if tmin is not None and tmax is not None:
+        clauses.append('temperature_c BETWEEN ? AND ?'); params += [tmin,tmax]
+    if fmin is not None and fmax is not None:
+        clauses.append('frequency_ghz BETWEEN ? AND ?'); params += [fmin,fmax]
+    return pd.read_sql(f'''
+      SELECT sample_type 类型, component1_en 组分1英文名,component1_cn 组分1中文名,cas1 CAS_1,
+             component2_en 组分2英文名,component2_cn 组分2中文名,cas2 CAS_2,
+             x1 组成1,x2 组成2,composition_basis 组成基准,temperature_c "T / °C",frequency_ghz "Frequency / GHz",
+             epsilon_static "εs",epsilon_real "ε′",epsilon_imag "ε″",data_kind 数据类型,method 提取方法,
+             source_name 数据来源,source_detail 来源详情,doi DOI,notes 备注
+      FROM measurement_view WHERE {' AND '.join(clauses)}
+      ORDER BY component1_en,component2_en,temperature_c,frequency_ghz LIMIT {int(limit)}
+    ''', get_conn(), params=params)
+
+@st.cache_data
+def get_property_row(compound_id):
+    if not table_exists('compound_properties'): return pd.DataFrame()
+    return pd.read_sql('''
+      SELECT cp.*, c.name_en, c.name_cn, c.cas AS compound_cas
+      FROM compound_properties cp JOIN compounds c ON c.id=cp.compound_id WHERE cp.compound_id=?
+    ''', get_conn(), params=[compound_id])
+
+@st.cache_data
+def get_provenance(compound_id):
+    if not table_exists('property_provenance'): return pd.DataFrame()
+    return pd.read_sql('''
+      SELECT property_name AS 属性,value AS 数值,unit AS 单位,temperature_c AS "T / °C",pressure_kpa AS "P / kPa",
+             data_type AS 数据类型,source_type AS 来源类型,source_name AS 来源名称,doi DOI,reference AS Reference,
+             retrieval_date AS 检索日期,original_value AS 原始值,original_unit AS 原始单位,notes AS 备注
+      FROM property_provenance WHERE compound_id=? ORDER BY property_name,source_type,source_name
+    ''', get_conn(), params=[compound_id])
+
+@st.cache_data
+def pure_measurements(cas):
+    return pd.read_sql(f'''
+      SELECT temperature_c AS "T / °C",frequency_ghz AS "Frequency / GHz",epsilon_static AS "εs",epsilon_real AS "ε′",epsilon_imag AS "ε″",
+             data_kind AS 数据类型,method AS 提取方法,source_name AS 数据来源,source_detail AS 来源详情,doi DOI,notes AS 备注
+      FROM measurement_view WHERE sample_type='pure' AND cas1=? AND {BASE_QUALITY}
+      ORDER BY temperature_c,frequency_ghz
+    ''', get_conn(), params=[cas])
+
+kpis=get_kpis(); comp_prop=property_completeness()
+st.title('介电性质数据库 · v5.3')
+st.markdown("<div class='muted'>v5.3 · 介电数据 + 基础分子物性 + 来源追溯 + 数据完整性检查。查询软件为只读模式，不会修改数据库。</div>", unsafe_allow_html=True)
+
+tabs=st.tabs(['数据总览','数据查询','单物质','混合物','基础物性','数据完整性'])
+
+with tabs[0]:
+    c1,c2,c3,c4,c5=st.columns(5)
+    c1.metric('物质',f"{int(kpis['compounds']):,}")
+    c2.metric('可用数据',f"{int(kpis['measurements']):,}")
+    c3.metric('纯物质',f"{int(kpis['pure_records']):,}")
+    c4.metric('混合物',f"{int(kpis['mixture_records']):,}")
+    c5.metric('数据源',f"{int(kpis['sources']):,}")
+    c1,c2,c3,c4=st.columns(4)
+    c1.metric('实验数据',f"{int(kpis['experimental_records'] or 0):,}")
+    c2.metric('图像数字化',f"{int(kpis['figure_records'] or 0):,}")
+    c3.metric('模拟/预测',f"{int(kpis['modeled_records'] or 0):,}")
+    if len(comp_prop):
+        overall=comp_prop['Filled'].sum()/(comp_prop['Filled'].sum()+comp_prop['Missing'].sum()) if (comp_prop['Filled'].sum()+comp_prop['Missing'].sum()) else 0
+        c4.metric('基础物性完整率',f'{overall:.1%}')
+    else: c4.metric('基础物性完整率','—')
+
+    left,right=st.columns([1.15,1])
+    with left:
+        st.subheader('数据源构成')
+        src=pd.read_sql(f'''SELECT source_name 数据来源,COUNT(*) 数据条数 FROM measurement_view WHERE {BASE_QUALITY} GROUP BY source_name ORDER BY 数据条数 DESC''',get_conn())
+        if len(src):
+            fig=px.bar(src.head(20),x='数据来源',y='数据条数',text_auto=True); fig.update_layout(height=430,xaxis_tickangle=-30)
+            st.plotly_chart(fig,use_container_width=True)
+    with right:
+        st.subheader('基础物性完整度')
+        if len(comp_prop):
+            show=comp_prop.copy(); show['完整率']=show['Completeness'].map(lambda x:f'{x:.1%}')
+            st.dataframe(show[['Property','Filled','Missing','完整率']].rename(columns={'Property':'属性','Filled':'已填','Missing':'缺失'}),use_container_width=True,hide_index=True,height=430)
+        else: st.info('当前数据库尚未建立 compound_properties 表。')
+
+with tabs[1]:
+    st.subheader('数据查询')
+    search=st.text_input('物质名称 / 中文名 / CAS',placeholder='例如 Methanol、甲醇、67-56-1',key='q_search')
+    a,b,c,d=st.columns(4)
+    def tonum(x):
+        try:return float(x) if str(x).strip() else None
+        except:return None
+    tmin=tonum(a.text_input('最低温度 / °C',key='q_tmin')); tmax=tonum(b.text_input('最高温度 / °C',key='q_tmax'))
+    fmin=tonum(c.text_input('最低频率 / GHz',key='q_fmin')); fmax=tonum(d.text_input('最高频率 / GHz',key='q_fmax'))
+    if (tmin is None)!=(tmax is None): st.info('温度范围需同时填写上下限。'); tmin=tmax=None
+    if (fmin is None)!=(fmax is None): st.info('频率范围需同时填写上下限。'); fmin=fmax=None
+    df=query_data(search,tmin,tmax,fmin,fmax)
+    st.caption(f'返回 {len(df):,} 条（最多 5000 条）')
+    st.dataframe(df,use_container_width=True,hide_index=True,height=560)
+    st.download_button('下载当前查询结果 CSV',df.to_csv(index=False).encode('utf-8-sig'),'dielectric_query.csv','text/csv')
+
+with tabs[2]:
+    st.subheader('单物质查询')
+    term=st.text_input('英文名 / 中文名 / CAS',placeholder='Methanol / 甲醇 / 67-56-1',key='single_term')
+    matches=find_compounds(term)
+    if term and len(matches):
+        st.dataframe(matches[['name_en','name_cn','cas','n_records']].rename(columns={'name_en':'英文名','name_cn':'中文名','cas':'CAS','n_records':'介电记录数'}),use_container_width=True,hide_index=True,height=min(260,38*(len(matches)+1)))
+        opts={f"{r.name_en} | {r.cas}":int(r.id) for _,r in matches.iterrows()}
+        pick=st.selectbox('选择物质',list(opts.keys()))
+        cid=opts[pick]; row=matches[matches.id==cid].iloc[0]; cas=row.cas
+        st.markdown(f"### {row.name_en}  {row.name_cn or ''}  ({cas})")
+        pr=get_property_row(cid)
+        if len(pr):
+            r=pr.iloc[0]
+            st.markdown('#### 基础分子性质')
+            items=[]
+            if 'smiles' in pr.columns: items.append(('SMILES',r.get('smiles')))
+            for field,label in PROPERTY_FIELDS:
+                if field in pr.columns: items.append((label,r.get(field)))
+            cols=st.columns(4)
+            for i,(label,val) in enumerate(items): cols[i%4].metric(label,'—' if pd.isna(val) else str(val))
+            prov=get_provenance(cid)
+            if len(prov):
+                with st.expander('查看基础物性来源与实验条件',expanded=False): st.dataframe(prov,use_container_width=True,hide_index=True)
+        q=pure_measurements(cas)
+        st.markdown('#### 介电性质')
+        if len(q):
+            a,b=st.columns(2)
+            with a:
+                static=q.dropna(subset=['εs','T / °C'])
+                if len(static):
+                    fig=px.scatter(static,x='T / °C',y='εs',color='数据来源'); fig.update_layout(height=380); st.plotly_chart(fig,use_container_width=True)
+                else: st.info('暂无带温度的 εs 数据。')
+            with b:
+                freq=q.dropna(subset=['Frequency / GHz'])
+                if len(freq):
+                    fig=go.Figure(); rr=freq.dropna(subset=['ε′']); ii=freq.dropna(subset=['ε″'])
+                    if len(rr): fig.add_trace(go.Scatter(x=rr['Frequency / GHz'],y=rr['ε′'],mode='markers',name='ε′'))
+                    if len(ii): fig.add_trace(go.Scatter(x=ii['Frequency / GHz'],y=ii['ε″'],mode='markers',name='ε″'))
+                    fig.update_layout(height=380,xaxis_title='Frequency / GHz'); st.plotly_chart(fig,use_container_width=True)
+                else: st.info('暂无频率分辨 ε′/ε″。')
+            st.dataframe(q,use_container_width=True,hide_index=True,height=430)
+        else: st.info('暂无该物质的纯物质介电记录。')
+    elif term: st.info('未找到匹配物质。')
+    else: st.caption('输入名称或 CAS 后查看基础物性与介电数据。')
+
+with tabs[3]:
+    st.subheader('混合物查询')
+    a,b=st.columns(2)
+    t1=a.text_input('Component 1：名称或 CAS',key='mix_a'); t2=b.text_input('Component 2：名称或 CAS',key='mix_b')
+    if t1 and t2:
+        m1=find_compounds(t1); m2=find_compounds(t2)
+        if len(m1) and len(m2):
+            cas1=str(m1.iloc[0].cas); cas2=str(m2.iloc[0].cas)
+            mix=pd.read_sql(f'''
+              SELECT component1_en 组分1,cas1 CAS_1,component2_en 组分2,cas2 CAS_2,x1,x2,composition_basis 组成基准,
+                     temperature_c "T / °C",frequency_ghz "Frequency / GHz",epsilon_static "εs",epsilon_real "ε′",epsilon_imag "ε″",
+                     data_kind 数据类型,method 提取方法,source_name 数据来源,doi DOI,notes 备注
+              FROM measurement_view WHERE sample_type='mixture' AND {BASE_QUALITY}
+              AND ((cas1=? AND cas2=?) OR (cas1=? AND cas2=?))
+              ORDER BY temperature_c,frequency_ghz,x1,x2
+            ''',get_conn(),params=[cas1,cas2,cas2,cas1])
+            if len(mix):
+                c1,c2,c3=st.columns(3)
+                xmin=float(mix['x1'].dropna().min()) if mix['x1'].notna().any() else None; xmax=float(mix['x1'].dropna().max()) if mix['x1'].notna().any() else None
+                c1.metric('记录数',f'{len(mix):,}'); c2.metric('温度点',mix['T / °C'].nunique(dropna=True)); c3.metric('频率点',mix['Frequency / GHz'].nunique(dropna=True))
+                if xmin is not None: st.caption(f'x1 范围：{xmin:.4g}–{xmax:.4g}')
+                st.dataframe(mix,use_container_width=True,hide_index=True,height=560)
+                st.download_button('下载该混合体系 CSV',mix.to_csv(index=False).encode('utf-8-sig'),'mixture_dielectric.csv','text/csv')
+            else: st.info('数据库中没有找到该二元体系。')
+        else: st.info('至少有一个组分未匹配到标准物质。')
+    else: st.caption('输入两个组分后查询。')
+
+with tabs[4]:
+    st.subheader('基础物性查询')
+    if not table_exists('compound_properties'):
+        st.warning('当前数据库尚未建立 compound_properties 表。软件已兼容该表，替换为更新后的数据库后会自动显示。')
+    else:
+        q=st.text_input('名称 / CAS',key='prop_search')
+        where=''; params=[]
+        if q.strip():
+            where='WHERE c.name_en LIKE ? OR COALESCE(c.name_cn,\'\') LIKE ? OR c.cas LIKE ?'; s=f'%{q.strip()}%'; params=[s,s,s]
+        pcols=cols_of('compound_properties')
+        select=['c.name_en AS 英文名','c.name_cn AS 中文名','c.cas AS CAS']
+        mapping=[('smiles','SMILES')]+PROPERTY_FIELDS
+        for field,label in mapping:
+            if field in pcols: select.append(f'cp.{field} AS "{label}"')
+        data=pd.read_sql(f'''SELECT {','.join(select)} FROM compounds c LEFT JOIN compound_properties cp ON cp.compound_id=c.id {where} ORDER BY c.name_en LIMIT 3000''',get_conn(),params=params)
+        st.dataframe(data,use_container_width=True,hide_index=True,height=600)
+        st.download_button('下载基础物性查询结果 CSV',data.to_csv(index=False).encode('utf-8-sig'),'compound_properties.csv','text/csv')
+
+with tabs[5]:
+    st.subheader('数据完整性与追溯')
+    a,b,c,d=st.columns(4)
+    dup=get_conn().execute('''SELECT COUNT(*) FROM (SELECT sample_type,component1_id,component2_id,x1,x2,composition_basis,temperature_c,frequency_ghz,epsilon_static,epsilon_real,epsilon_imag,doi,COUNT(*) n FROM measurements GROUP BY sample_type,component1_id,component2_id,x1,x2,composition_basis,temperature_c,frequency_ghz,epsilon_static,epsilon_real,epsilon_imag,doi HAVING COUNT(*)>1)''').fetchone()[0]
+    missing_doi=get_conn().execute(f"SELECT COUNT(*) FROM measurements WHERE {BASE_QUALITY} AND (doi IS NULL OR TRIM(doi)='')").fetchone()[0]
+    a.metric('完全重复组',f'{dup:,}'); b.metric('可用记录缺 DOI',f'{missing_doi:,}')
+    if table_exists('property_provenance'):
+        provn=get_conn().execute('SELECT COUNT(*) FROM property_provenance').fetchone()[0]
+        source_missing=get_conn().execute("SELECT COUNT(*) FROM property_provenance WHERE source_name IS NULL OR TRIM(source_name)='' ").fetchone()[0]
+        c.metric('物性来源记录',f'{provn:,}'); d.metric('物性来源缺失',f'{source_missing:,}')
+    else: c.metric('物性来源记录','—'); d.metric('物性来源缺失','—')
+
+    if len(comp_prop):
+        show=comp_prop.copy(); show['Completeness']=show['Completeness'].map(lambda x:f'{x:.1%}')
+        st.markdown('#### 基础物性缺失统计')
+        st.dataframe(show.rename(columns={'Property':'属性','Filled':'已填','Missing':'缺失','Completeness':'完整率'}),use_container_width=True,hide_index=True)
+    st.markdown('#### 数据类型统计')
+    kinds=pd.read_sql(f'''SELECT COALESCE(data_kind,'(空)') 数据类型,COUNT(*) 记录数 FROM measurements WHERE {BASE_QUALITY} GROUP BY data_kind ORDER BY 记录数 DESC''',get_conn())
+    st.dataframe(kinds,use_container_width=True,hide_index=True)
+
+st.divider()
+st.caption('SQLite backend · Streamlit interface · read-only query mode · v5.3')
