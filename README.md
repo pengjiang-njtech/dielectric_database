@@ -1,80 +1,48 @@
-# 介电性质数据库 v5.4 — 部署版
+# 介电性质数据库软件
 
-这是可直接部署的 Streamlit + SQLite 版本。数据库结构未改变，网页查询使用 SQLite 只读连接。
+本版本已将最新 SQLite 数据库与新版 UI 真正合并。网页读取由数据库导出的真实数据，而不是固定示意数据。
 
-## v5.4 更新
+## 已接入的数据
 
-- 软件统计恢复为全部可用介电记录：72,357 条（纯物质 65,114；混合物 7,243）。
-- 单物质页显示基础分子物性及来源追溯。
-- 基础物性连续数值统一显示 3 位小数；H-bond acceptors/donors 显示为整数。
-- 单物质频率介电谱按温度分组，并增加 Cole–Cole 图。
-- 混合物增加 εs–组成、频率介电谱和 Cole–Cole 图。
-- 科学图全部改为单行全宽显示；图例移到图上方，静态 ε–T 图用 S1/S2… 简写来源，避免长文献名称遮挡图形。
-- 每一张科学图均可下载其绘图数据 CSV。
-- 继续保留查询结果、混合体系全数据、基础物性来源及完整性统计 CSV 下载。
-- 删除独立“基础物性”标签页，基础物性整合到单物质查询和完整性页面。
-- 当前 `dielectric.db` 已包含截至 CRC Handbook 整理完成阶段的基础物性补充和来源记录。
+- 1,621 个物质
+- 72,357 条介电数据
+- 65,114 条纯物质数据
+- 7,243 条混合物数据
+- 50 个数据来源
+- 21,120 条物性来源记录
 
-## 仓库必须包含
+## 已实现功能
 
-```text
-.
-├── app.py
-├── dielectric.db
-├── requirements.txt
-├── README.md
-├── .gitignore
-├── .gitattributes
-├── .streamlit/
-│   └── config.toml
-├── run_windows.bat
-├── run_mac_linux.sh
-├── Procfile
-└── runtime.txt
-```
+- 数据总览与数据源贡献统计
+- 按名称、CAS、分子式、样品类型、温度和介电指标查询
+- 单物质物性展示和来源追溯
+- 静态介电常数–温度图：实验数据为散点，拟合或关联数据为曲线
+- 复介电频谱按全部温度或单一温度显示
+- Cole–Cole 数据可用性检查与原始复介电图
+- 二元混合物按组分、组成基准、温度和指标查询
+- 查询结果、物性、图表数据和混合物数据 CSV 下载
 
-## GitHub Desktop 更新
+## 直接部署到 GitHub Pages
 
-建议直接用 GitHub Desktop：
+1. 新建 GitHub 仓库。
+2. 将本文件夹内的全部内容上传到仓库根目录，确保 `index.html` 位于根目录。
+3. 打开 `Settings → Pages`。
+4. 在 `Build and deployment` 中选择 `Deploy from a branch`。
+5. 选择 `main` 分支和 `/root`，保存。
 
-1. 将本部署包中的文件覆盖到本地仓库根目录。
-2. GitHub Desktop 会显示变更。
-3. Commit，例如 `Update dielectric database v5.4`。
-4. Push origin。
+发布完成后即可直接访问。页面首次打开需要下载约 30 MB 的数据库导出数据，载入时间取决于网络速度。
 
-`dielectric.db` 超过 GitHub 网页 25 MB 上传提示限制，但仍低于 GitHub 普通 Git push 的 100 MB 单文件硬限制，因此用 GitHub Desktop 即可。
+## 文件结构
 
-## Streamlit Community Cloud
+- `index.html`：软件入口。
+- `assets/app.js`：查询、绘图、来源映射和 CSV 下载逻辑。
+- `assets/style.css`：界面样式。
+- `data/*.json`：由最新 SQLite 数据库导出的网页数据，页面实际读取这些文件。
+- `database/dielectric_database.db`：最新原始 SQLite 数据库备份。
+- `source/export_static_data.py`：将 SQLite 数据库重新导出为网页 JSON 的脚本。
 
-Main file path 使用 `app.py`。应用无需数据库账号和密码；`app.py` 直接读取同目录 `dielectric.db`，并以 SQLite `mode=ro` 只读连接。
+## 更新数据库
 
-## 本地运行
+将新数据库替换为 `database/dielectric_database.db`，并调整导出脚本中的数据库路径后运行 `source/export_static_data.py`，再把生成的 JSON 文件更新到 `data/`。
 
-Windows 可双击 `run_windows.bat`，或执行：
-
-```bash
-python -m pip install -r requirements.txt
-python -m streamlit run app.py
-```
-
-macOS/Linux：
-
-```bash
-chmod +x run_mac_linux.sh
-./run_mac_linux.sh
-```
-
-## 数据库检查
-
-替换数据库后建议运行：
-
-```bash
-python check_database.py
-```
-
-当前数据库预期核心统计：
-
-- `measurements`: 72,357
-- `compound_properties`: 1,621
-- `property_provenance`: 15,010
-- SQLite integrity check: `ok`
+静态网页不会在浏览器中直接修改 SQLite 数据库，适合只读查询与公开展示。
