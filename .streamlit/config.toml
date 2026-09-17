@@ -1,6 +1,0 @@
-[server]
-maxMessageSize = 200
-
-[theme]
-base = "light"
-primaryColor = "#1769e0"
