@@ -6,6 +6,7 @@ import streamlit.components.v1 as components
 
 
 ROOT = Path(__file__).resolve().parent
+APP_VERSION = "2026.09.17-v3.1"
 
 st.set_page_config(
     page_title="介电性质数据库",
@@ -16,7 +17,7 @@ st.set_page_config(
 
 
 @st.cache_data(show_spinner="正在载入介电性质数据库…")
-def build_application() -> str:
+def build_application(version: str) -> str:
     html = (ROOT / "index.html").read_text(encoding="utf-8")
     css = (ROOT / "assets" / "style.css").read_text(encoding="utf-8")
     fixes_css = (ROOT / "assets" / "fixes.css").read_text(encoding="utf-8")
@@ -64,4 +65,4 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-components.html(build_application(), height=1000, scrolling=True)
+components.html(build_application(APP_VERSION), height=1000, scrolling=True)
