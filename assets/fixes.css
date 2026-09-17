@@ -1,0 +1,38 @@
+[hidden] { display: none !important; }
+
+.top-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: min(760px, 80%);
+}
+.top-search input { width: 100%; }
+.compound-picker input,
+.mixture-builder input {
+  border: 1px solid var(--line);
+  background: var(--soft);
+  padding: 9px 10px;
+  border-radius: 8px;
+  color: var(--text);
+  min-width: 0;
+}
+.chart-panel canvas {
+  width: 100% !important;
+  height: 400px !important;
+  min-height: 400px;
+}
+.inline-message {
+  padding: 10px 13px;
+  margin: -4px 0 14px;
+  border: 1px solid #fed7aa;
+  border-radius: 9px;
+  background: #fff7ed;
+  color: #9a3412;
+  font-size: 13px;
+}
+@media (max-width: 760px) {
+  .top-search { width: 100%; }
+  .status { display: none; }
+  .chart-panel canvas { height: 330px !important; min-height: 330px; }
+  .mixture-builder input { width: 100%; }
+}
