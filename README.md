@@ -1,4 +1,15 @@
-# 介电性质数据库软件
+# 介电性质数据库软件（Streamlit + GitHub Pages 双部署版）
+
+## Streamlit Cloud 部署（推荐）
+
+1. 在 GitHub 新建仓库，将本文件夹内的全部内容上传到仓库根目录。
+2. 打开 https://share.streamlit.io/，使用 GitHub 登录。
+3. 点击 **Create app**，选择刚才的仓库与 `main` 分支。
+4. **Main file path** 填写 `app.py`，点击 **Deploy**。
+
+部署时不需要填写 Secrets。首次打开需要载入约 30 MB 数据，可能等待数秒。
+
+本版本同时保留静态入口 `index.html`，所以仍可按下文方式部署到 GitHub Pages。
 
 本版本已将最新 SQLite 数据库与新版 UI 真正合并。网页读取由数据库导出的真实数据，而不是固定示意数据。
 
