@@ -1,6 +1,50 @@
 /* Responsive scientific chart renderer: explicit ticks, labels and DPR-safe canvas. */
 const chartRegistry = new Map();
 
+function valueText(value) {
+  if (!Number.isFinite(value)) return 'NULL';
+  const abs = Math.abs(value);
+  if ((abs >= 10000) || (abs > 0 && abs < 0.001)) return value.toExponential(4);
+  return Number(value.toFixed(6)).toString();
+}
+
+function bindChartTooltip(canvas) {
+  if (canvas.dataset.tooltipBound) return;
+  canvas.dataset.tooltipBound = '1';
+  const panel = canvas.closest('.chart-panel') || canvas.parentElement;
+  if (getComputedStyle(panel).position === 'static') panel.style.position = 'relative';
+  const tooltip = document.createElement('div');
+  tooltip.className = 'chart-tooltip';
+  tooltip.hidden = true;
+  panel.appendChild(tooltip);
+  canvas.addEventListener('mousemove', event => {
+    const rect = canvas.getBoundingClientRect();
+    const x = event.clientX - rect.left, y = event.clientY - rect.top;
+    let nearest = null, distance = Infinity;
+    (canvas._chartHits || []).forEach(hit => {
+      const d = Math.hypot(hit.px - x, hit.py - y);
+      if (d < distance) { distance = d; nearest = hit; }
+    });
+    if (!nearest || distance > 12) {
+      tooltip.hidden = true;
+      canvas.style.cursor = 'default';
+      return;
+    }
+    canvas.style.cursor = 'crosshair';
+    tooltip.innerHTML = `<b><i style="background:${nearest.color}"></i>${esc(nearest.label)}</b><span>${esc(nearest.xLabel)}：${valueText(nearest.x)}</span><span>${esc(nearest.yLabel)}：${valueText(nearest.y)}</span>`;
+    tooltip.hidden = false;
+    const panelRect = panel.getBoundingClientRect();
+    let left = event.clientX - panelRect.left + 14;
+    let top = event.clientY - panelRect.top + 14;
+    const tw = tooltip.offsetWidth || 190, th = tooltip.offsetHeight || 80;
+    if (left + tw > panel.clientWidth - 8) left -= tw + 28;
+    if (top + th > panel.clientHeight - 8) top -= th + 28;
+    tooltip.style.left = `${Math.max(8,left)}px`;
+    tooltip.style.top = `${Math.max(8,top)}px`;
+  });
+  canvas.addEventListener('mouseleave', () => { tooltip.hidden = true; canvas.style.cursor = 'default'; });
+}
+
 function niceTicks(min, max, count = 6) {
   if (!Number.isFinite(min) || !Number.isFinite(max)) return [];
   if (min === max) return [min];
@@ -23,8 +67,9 @@ function tickText(value, span) {
 
 drawChart = function(canvas, series, xLabel, yLabel, opt = {}) {
   chartRegistry.set(canvas, {series, xLabel, yLabel, opt});
+  bindChartTooltip(canvas);
   const rect = canvas.getBoundingClientRect();
-  const width = Math.max(640, Math.round(rect.width || canvas.parentElement.clientWidth || 900));
+  const width = Math.max(320, Math.round(rect.width || canvas.parentElement.clientWidth || 900));
   const height = Math.max(360, Math.round(rect.height || 420));
   const dpr = Math.min(2, window.devicePixelRatio || 1);
   canvas.width = Math.round(width * dpr);
@@ -39,6 +84,7 @@ drawChart = function(canvas, series, xLabel, yLabel, opt = {}) {
   ctx.font = '12px "Microsoft YaHei", Arial, sans-serif';
   ctx.fillStyle = '#64748b';
   if (!points.length) {
+    canvas._chartHits = [];
     ctx.textAlign = 'center';
     ctx.fillText('暂无符合条件的数据', width / 2, height / 2);
     return;
@@ -86,6 +132,7 @@ drawChart = function(canvas, series, xLabel, yLabel, opt = {}) {
   ctx.fillText(xLabel, margin.left + plotWidth / 2, height - 16);
   ctx.save(); ctx.translate(20, margin.top + plotHeight / 2); ctx.rotate(-Math.PI / 2); ctx.fillText(yLabel, 0, 0); ctx.restore();
 
+  const hitTargets = [];
   ctx.save(); ctx.beginPath(); ctx.rect(margin.left, margin.top, plotWidth, plotHeight); ctx.clip();
   series.forEach(s => {
     const clean = (s.points || []).filter(p => Number.isFinite(p[0]) && Number.isFinite(p[1]) && (!opt.logX || p[0] > 0)).sort((a, b) => a[0] - b[0]);
@@ -96,8 +143,10 @@ drawChart = function(canvas, series, xLabel, yLabel, opt = {}) {
     } else {
       clean.forEach(p => { ctx.beginPath(); ctx.arc(X(p[0]), Y(p[1]), s.radius || 3.8, 0, Math.PI * 2); ctx.fill(); });
     }
+    clean.forEach(p => hitTargets.push({px:X(p[0]),py:Y(p[1]),x:p[0],y:p[1],label:s.label||'数据点',color:s.color,xLabel,yLabel}));
   });
   ctx.restore();
+  canvas._chartHits = hitTargets;
 };
 
 /* Frequency charts open at the temperature nearest 25 °C; users can still select all temperatures. */
@@ -113,23 +162,43 @@ renderFrequency = function() {
   $('#frequencyCsv').onclick = () => downloadMeasurements(filterFrequencyRows(rows), `${safeName(state.currentCompound.name_en)}_frequency.csv`);
 };
 
-/* Normalize mixture composition to the first selected component before plotting. */
+/* Normalize composition to the first selected component and never mix composition bases. */
 renderMix = function() {
   const basis=$('#mixBasis').value,tv=$('#mixTemp').value,prop=$('#mixProperty').value,selected=findCompound($('#mixC1').value);
-  const rows=state.currentMixRows.filter(r=>(!basis||rv(r,'composition_basis')===basis)&&(tv==='all'||rv(r,'temperature_c')===+tv));
-  const temps=[...new Set(rows.map(r=>rv(r,'temperature_c')))],series=[];
-  temps.forEach((t,i)=>{
-    const color=palette[i%palette.length];
-    const points=rows.filter(r=>rv(r,'temperature_c')===t&&rv(r,prop)!=null).map(r=>{
-      const x=selected&&rv(r,'component1_id')===selected.id?rv(r,'x1'):selected&&rv(r,'component2_id')===selected.id?rv(r,'x2'):rv(r,'x1');
-      return [x,rv(r,prop)];
-    }).filter(p=>p[0]!=null);
-    if(points.length){series.push({label:`${fmt(t)} °C · 实验值`,color,line:false,points});const fit=fittedCurve(points);if(fit.length)series.push({label:`${fmt(t)} °C · 拟合`,color,line:true,points:fit});}
+  const rows=state.currentMixRows.filter(r=>rv(r,'composition_basis')===basis&&(tv==='all'||rv(r,'temperature_c')===+tv));
+  const fractionBasis=['mole_fraction','mass_fraction','volume_fraction'].includes(basis);
+  const coordinate=r=>{
+    if(!selected)return null;
+    if(rv(r,'component1_id')===selected.id)return rv(r,'x1');
+    if(rv(r,'component2_id')!==selected.id)return null;
+    if(rv(r,'x2')!=null)return rv(r,'x2');
+    if(fractionBasis&&rv(r,'x1')!=null)return 1-rv(r,'x1');
+    return null;
+  };
+  const usable=rows.filter(r=>coordinate(r)!=null&&rv(r,prop)!=null&&!/fit|simulat|correlation|predict/i.test(rv(r,'data_kind')||''));
+  const sourceMap=chartSourceMap(usable,'M'),sourceColor=new Map(sourceMap.map(s=>[s.id,s.color])),sourceCode=new Map(sourceMap.map(s=>[s.id,s.code]));
+  const groups=new Map();
+  usable.forEach(r=>{const key=`${rv(r,'source_id')}|${rv(r,'temperature_c')}`;(groups.get(key)||groups.set(key,[]).get(key)).push(r)});
+  const series=[];
+  groups.forEach((group,key)=>{
+    const [sid,t]=key.split('|'),color=sourceColor.get(+sid)||palette[series.length%palette.length],code=sourceCode.get(+sid)||'M?';
+    const points=group.map(r=>[coordinate(r),rv(r,prop)]).filter(p=>p[0]!=null&&p[1]!=null);
+    if(!points.length)return;
+    const label=`${code} · ${fmt(+t)} °C`;
+    series.push({label:`${label} · 实验值`,color,line:false,points});
+    const unique=[...new Set(points.map(p=>p[0]))],span=Math.max(...unique)-Math.min(...unique);
+    if(unique.length>=4&&(!fractionBasis||span>=0.3)){
+      const fit=fittedCurve(points);
+      if(fit.length)series.push({label:`${label} · 拟合`,color,line:true,points:fit});
+    }
   });
   const component=selected?(selected.name_cn||selected.name_en||'组分1'):'组分1';
-  drawChart($('#mixtureChart'),series,`${component}${basisNames[basis]||basis||'组成'}`,prop==='epsilon_static'?'εs':prop==='epsilon_real'?'ε′':'ε″');
+  const basisAxis={mole_fraction:`${component}摩尔分数, x`,mass_fraction:`${component}质量分数, w`,volume_fraction:`${component}体积分数, φ`,molarity:`${component}摩尔浓度`,salt_molarity:`${component}盐摩尔浓度`};
+  const yAxis=prop==='epsilon_static'?'静态介电常数, εs':prop==='epsilon_real'?'介电常数, ε′':'介电损耗, ε″';
+  drawChart($('#mixtureChart'),series,basisAxis[basis]||`${component}组成`,yAxis);
   $('#mixtureLegend').innerHTML=series.map(s=>`<span><i style="background:${s.color}"></i>${esc(s.label)}</span>`).join('');
-  const sm=chartSourceMap(rows,'M');$('#mixSources').onclick=()=>openDrawer(sm);$('#mixCount').textContent=`${rows.length} 条；组成基准：${basisNames[basis]||basis||'未注明'}`;
+  $('#mixSources').onclick=()=>openDrawer(sourceMap);
+  $('#mixCount').textContent=`${rows.length} 条原始记录；${usable.length} 条参与绘图；组成基准：${basisNames[basis]||basis}`;
   $('#mixtureTable').innerHTML='<thead><tr><th>组分 1</th><th>组分 2</th><th>x1</th><th>x2</th><th>组成基准</th><th>T / °C</th><th>f / GHz</th><th>εs</th><th>ε′</th><th>ε″</th><th>来源</th></tr></thead><tbody>'+rows.slice(0,500).map(r=>`<tr><td>${esc(compoundName(rv(r,'component1_id')))}</td><td>${esc(compoundName(rv(r,'component2_id')))}</td><td>${fmt(rv(r,'x1'))}</td><td>${fmt(rv(r,'x2'))}</td><td>${esc(basisNames[rv(r,'composition_basis')]||rv(r,'composition_basis')||'—')}</td><td>${fmt(rv(r,'temperature_c'))}</td><td>${fmt(rv(r,'frequency_ghz'),6)}</td><td>${fmt(rv(r,'epsilon_static'))}</td><td>${fmt(rv(r,'epsilon_real'))}</td><td>${fmt(rv(r,'epsilon_imag'))}</td><td>${esc(sourceById(rv(r,'source_id'))?.source_key||'—')}</td></tr>`).join('')+'</tbody>';
 };
 

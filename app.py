@@ -6,7 +6,7 @@ import streamlit.components.v1 as components
 
 
 ROOT = Path(__file__).resolve().parent
-APP_VERSION = "2026.09.17-v3.2"
+APP_VERSION = "2026.09.17-v3.3"
 
 st.set_page_config(
     page_title="介电性质数据库",
