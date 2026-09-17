@@ -30,9 +30,22 @@
   color: #9a3412;
   font-size: 13px;
 }
+.section-divider {
+  display: flex;
+  justify-content: space-between;
+  align-items: end;
+  gap: 16px;
+  margin: 34px 0 16px;
+  padding-top: 26px;
+  border-top: 1px solid var(--line);
+}
+.section-divider h1 { margin: 0; font-size: 22px; }
+.section-divider p { margin: 5px 0 0; color: var(--muted); font-size: 13px; }
 @media (max-width: 760px) {
   .top-search { width: 100%; }
   .status { display: none; }
   .chart-panel canvas { height: 330px !important; min-height: 330px; }
   .mixture-builder input { width: 100%; }
+  .sidebar nav { grid-template-columns: repeat(3, 1fr); }
+  .section-divider { align-items: flex-start; }
 }
