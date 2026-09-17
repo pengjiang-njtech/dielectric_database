@@ -6,7 +6,7 @@ import streamlit.components.v1 as components
 
 
 ROOT = Path(__file__).resolve().parent
-APP_VERSION = "2026.09.17-v3.1"
+APP_VERSION = "2026.09.17-v3.2"
 
 st.set_page_config(
     page_title="介电性质数据库",
@@ -22,6 +22,7 @@ def build_application(version: str) -> str:
     css = (ROOT / "assets" / "style.css").read_text(encoding="utf-8")
     fixes_css = (ROOT / "assets" / "fixes.css").read_text(encoding="utf-8")
     app_js = (ROOT / "assets" / "app.js").read_text(encoding="utf-8")
+    charts_js = (ROOT / "assets" / "charts-v2.js").read_text(encoding="utf-8")
 
     datasets = {}
     for name in ("meta", "compounds", "measurements", "provenance"):
@@ -51,6 +52,7 @@ window.fetch = (url, options) => {{
     html = html.replace('<link rel="stylesheet" href="assets/style.css">', f"<style>{css}</style>")
     html = html.replace('<link rel="stylesheet" href="assets/fixes.css">', f"<style>{fixes_css}</style>")
     html = html.replace('<script src="assets/app.js"></script>', f"{fetch_shim}<script>{app_js}</script>")
+    html = html.replace('<script src="assets/charts-v2.js"></script>', f"<script>{charts_js}</script>")
     return html
 
 
